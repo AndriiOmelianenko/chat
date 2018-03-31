@@ -1,7 +1,3 @@
-// Skeleton to part 9 of the Whispering Gophers code lab.
-//
-// This program extends part 8.
-//
 // It connects to the peer specified by -peer.
 // It accepts connections from peers and receives messages from them.
 // When it sees a peer with an address it hasn't seen before, it makes a
@@ -33,7 +29,6 @@ var (
 )
 
 type Message struct {
-	// TODO: add ID field
 	ID   string
 	Name string
 	Addr string
@@ -120,12 +115,10 @@ func serve(c net.Conn) {
 			log.Println(err)
 			return
 		}
-
-		// TODO: If this message has seen before, ignore it.
 		if strings.Contains(m.Body, "Spam") {
 			continue
 		}
-		if _, ok := seenmsgs.mm[m.ID]; ok {
+		if Seen(m.ID) {
 			continue
 		}
 		fmt.Printf("%#v\n", m)
@@ -138,13 +131,11 @@ func readInput() {
 	s := bufio.NewScanner(os.Stdin)
 	for s.Scan() {
 		m := Message{
-			// TODO: use util.RandomID to populate the ID field.
 			ID:   util.RandomID(),
 			Name: *myname,
 			Addr: self,
 			Body: s.Text(),
 		}
-		// TODO: Mark the message ID as seen.
 		Seen(m.ID)
 		bodyParse := strings.SplitN(m.Body, "|", 2)
 		if len(bodyParse) > 1 {
@@ -191,25 +182,21 @@ func dial(addr string) {
 	}
 }
 
-var seenmsgs = SeenMessages{mm: make(map[string]bool)}
+var seenIDs = SeenMessages{m: make(map[string]bool)}
 
-// TODO: Create a new map of seen message IDs and a mutex to protect it.
 type SeenMessages struct {
-	mm map[string]bool
+	m  map[string]bool
 	mu sync.RWMutex
 }
 
 // Seen returns true if the specified id has been seen before.
 // If not, it returns false and marks the given id as "seen".
 func Seen(id string) bool {
-	// TODO: Get a write lock on the seen message IDs map and unlock it at before returning.
-	seenmsgs.mu.RLock()
-	defer seenmsgs.mu.RUnlock()
-	// TODO: Check if the id has been seen before and return that later.
-	if _, ok := seenmsgs.mm[id]; ok {
+	seenIDs.mu.RLock()
+	defer seenIDs.mu.RUnlock()
+	if _, ok := seenIDs.m[id]; ok {
 		return true
 	}
-	// TODO: Mark the ID as seen in the map.
-	seenmsgs.mm[id] = true
+	seenIDs.m[id] = true
 	return false
 }
