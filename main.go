@@ -12,7 +12,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"net"
 	"os"
@@ -20,32 +19,48 @@ import (
 
 	"github.com/campoy/whispering-gophers/util"
 	"strings"
+	"fmt"
+	"crypto/aes"
+	"io"
+	"crypto/rand"
+	"crypto/cipher"
+	"encoding/base64"
 )
 
 var (
-	peerAddr = flag.String("peer", "", "peer host:port")
-	myname   = flag.String("myname", "", "myname name")
-	self     string
+	listenAddr = flag.String("listen", "localhost:8000", "host:port to listen on")
+	peerAddr   = flag.String("peer", "", "peer host:port")
+	myName     = flag.String("myname", "Anonymous", "myname name")
+	aesKey = flag.String("aeskey", "very-secure-key0", "aeskey key")
+	self       string
 )
 
 type Message struct {
-	ID   string
-	Name string
-	Addr string
-	Body string
+	ID        string
+	Name      string
+	Addr      string
+	Body      string
+	Recipient string
 }
 
 func main() {
 	flag.Parse()
-
-	l, err := util.Listen()
+	aesKeyLen := len(*aesKey)
+	if aesKeyLen != 16 && aesKeyLen != 24 && aesKeyLen != 24 {
+		log.Println("Current AES key length:", aesKeyLen)
+		log.Fatal("Your AES key should be 16, 24 or 32 bytes long.")
+	}
+	log.Println("Using name:", *myName)
+	l, err := net.Listen("tcp", *listenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	self = l.Addr().String()
 	log.Println("Listening on", self)
 
-	go dial(*peerAddr)
+	if *peerAddr != "" {
+		go dial(*peerAddr)
+	}
 	go readInput()
 
 	for {
@@ -105,6 +120,30 @@ func broadcast(m Message) {
 	}
 }
 
+func privateMessage(m Message, peer string) {
+	peers.mu.RLock()
+	defer peers.mu.RUnlock()
+	m.Body = encrypt([]byte(*aesKey), m.Body)
+	if _, ok := peers.m[peer]; ok {
+		select {
+		case peers.m[peer] <- m:
+		default:
+			// Okay to drop messages sometimes.
+		}
+	} else {
+		broadcast(m)
+	}
+
+}
+
+func getPrivateMessageRecipient(msg string) (string, bool) {
+	msgParse := strings.SplitN(msg, "|", 2)
+	if len(msgParse) > 1 {
+		return msgParse[0], true
+	} else {
+		return "", false
+	}
+}
 func serve(c net.Conn) {
 	defer c.Close()
 	d := json.NewDecoder(c)
@@ -121,8 +160,19 @@ func serve(c net.Conn) {
 		if Seen(m.ID) {
 			continue
 		}
-		fmt.Printf("%#v\n", m)
-		broadcast(m)
+		if m.Recipient != "" {
+			if m.Recipient == self {
+				m.Body = decrypt([]byte(*aesKey), m.Body)
+				log.Println("Incoming private connection from:", m.Name, m.Addr)
+				fmt.Printf("%#v\n", m)
+			} else {
+				broadcast(m)
+			}
+		} else {
+			log.Println("Incoming connection from:", m.Name, m.Addr)
+			fmt.Printf("%#v\n", m)
+			broadcast(m)
+		}
 		go dial(m.Addr)
 	}
 }
@@ -130,23 +180,27 @@ func serve(c net.Conn) {
 func readInput() {
 	s := bufio.NewScanner(os.Stdin)
 	for s.Scan() {
-		m := Message{
-			ID:   util.RandomID(),
-			Name: *myname,
-			Addr: self,
-			Body: s.Text(),
-		}
-		Seen(m.ID)
-		bodyParse := strings.SplitN(m.Body, "|", 2)
-		if len(bodyParse) > 1 {
-			m.Body = bodyParse[1]
-			if _, ok := peers.m[bodyParse[0]]; ok {
-				peers.m[bodyParse[0]] <- m
+		peer, ok := getPrivateMessageRecipient(s.Text())
+		m := Message{}
+		if ok {
+			m = Message{
+				ID:        util.RandomID(),
+				Name:      *myName,
+				Addr:      self,
+				Body:      strings.Replace(s.Text(), peer+"|", "", 2),
+				Recipient: peer,
 			}
+			privateMessage(m, peer)
 		} else {
+			m = Message{
+				ID:   util.RandomID(),
+				Name: *myName,
+				Addr: self,
+				Body: s.Text(),
+			}
 			broadcast(m)
 		}
-
+		Seen(m.ID)
 	}
 	if err := s.Err(); err != nil {
 		log.Fatal(err)
@@ -182,10 +236,10 @@ func dial(addr string) {
 	}
 }
 
-var seenIDs = SeenMessages{m: make(map[string]bool)}
+var seenIDs = SeenMessages{sm: make(map[string]bool)}
 
 type SeenMessages struct {
-	m  map[string]bool
+	sm map[string]bool
 	mu sync.RWMutex
 }
 
@@ -194,9 +248,59 @@ type SeenMessages struct {
 func Seen(id string) bool {
 	seenIDs.mu.RLock()
 	defer seenIDs.mu.RUnlock()
-	if _, ok := seenIDs.m[id]; ok {
+	if _, ok := seenIDs.sm[id]; ok {
 		return true
 	}
-	seenIDs.m[id] = true
+	seenIDs.sm[id] = true
 	return false
+}
+
+// encrypt string to base64 crypto using AES
+func encrypt(key []byte, text string) string {
+	// key := []byte(keyText)
+	plaintext := []byte(text)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		log.Println(err)
+	}
+
+	// The IV needs to be unique, but not secure. Therefore it's common to
+	// include it at the beginning of the ciphertext.
+	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		log.Println(err)
+	}
+
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
+
+	// convert to base64
+	return base64.URLEncoding.EncodeToString(ciphertext)
+}
+
+// decrypt from base64 to decrypted string
+func decrypt(key []byte, cryptoText string) string {
+	ciphertext, _ := base64.URLEncoding.DecodeString(cryptoText)
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		panic(err)
+	}
+
+	// The IV needs to be unique, but not secure. Therefore it's common to
+	// include it at the beginning of the ciphertext.
+	if len(ciphertext) < aes.BlockSize {
+		log.Println("ciphertext too short")
+	}
+	iv := ciphertext[:aes.BlockSize]
+	ciphertext = ciphertext[aes.BlockSize:]
+
+	stream := cipher.NewCFBDecrypter(block, iv)
+
+	// XORKeyStream can work in-place if the two arguments are the same.
+	stream.XORKeyStream(ciphertext, ciphertext)
+
+	return fmt.Sprintf("%s", ciphertext)
 }
