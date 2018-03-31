@@ -17,21 +17,21 @@ import (
 	"os"
 	"sync"
 
-	"github.com/campoy/whispering-gophers/util"
-	"strings"
-	"fmt"
 	"crypto/aes"
-	"io"
-	"crypto/rand"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/base64"
+	"fmt"
+	"github.com/campoy/whispering-gophers/util"
+	"io"
+	"strings"
 )
 
 var (
 	listenAddr = flag.String("listen", "localhost:8000", "host:port to listen on")
 	peerAddr   = flag.String("peer", "", "peer host:port")
 	myName     = flag.String("myname", "Anonymous", "myname name")
-	aesKey = flag.String("aeskey", "very-secure-key0", "aeskey key")
+	aesKey     = flag.String("aeskey", "very-secure-key0", "aeskey key")
 	self       string
 )
 
